@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import os
 from sqlalchemy import inspect
 from sqlalchemy import text
+import numpy as np
 
 load_dotenv() # Load environment variables from .env file
 
