@@ -79,6 +79,7 @@ if 'csv_data' in st.session_state:
     st.subheader("Preview Data")
 
     df = pd.read_csv(io.StringIO(csv_data)) # Dataframe is created here
+    df.columns = (df.columns.str.strip().str.lower().str.replace(" ", "_")) # Preprocessing Col names
     st.dataframe(df, use_container_width=True)
 
     col1, col2 = st.columns(2)
@@ -119,17 +120,21 @@ if st.session_state.get("show_table_input") and submit_upload:
 
         if not inspector.has_table(table_name):
             # 1. Generate column definitions dynamically
-            column_definitions = ['"id" SERIAL PRIMARY KEY']
+            column_definitions = ['id SERIAL PRIMARY KEY']
 
             # 2. Generate remaining column definitions dynamically from DF
             for col_name, dtype in df.dtypes.items():
                 sql_type = map_pandas_dtype_to_sql(dtype)
-                column_definitions.append(f'"{col_name}" {sql_type}')
+                column_definitions.append(f'{col_name} {sql_type}')
 
-            # 3. Construct the CREATE TABLE query
+            # 3. Construct the CREATE TABLE query - Need to modify this part, remove using "" and space in col names - change the cols names in dataframe itself
             columns_string = ", ".join(column_definitions)
             create_table_query = f"CREATE TABLE {table_name} ({columns_string})"
             
+            with open("prompt.txt", "a", encoding="utf-8") as f:
+                f.write(create_table_query.strip() + ";\n\n")
+
+
             with engine.connect() as conn:
                 # 3. Execute the Create Table query
                 conn.execute(text(create_table_query))

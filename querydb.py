@@ -1,20 +1,34 @@
 import streamlit as st
-import os
 import pandas as pd
-import google.generativeai as genai
 from dotenv import load_dotenv
 from DB_Engine import engine
 from sqlalchemy import inspect
+from llama_cpp import Llama # type: ignore
+import sys
+import plotly.express as px # type: ignore
 
 # --- Setup ---
 load_dotenv()
-api_key = os.getenv("google_api_key")
+
+MODEL_PATH = "sqlcoder-7b.Q4_K_M.gguf"
+
+try:
+    llm = Llama(
+        model_path=MODEL_PATH,
+        n_ctx=2048,      # Context window size
+        n_gpu_layers=0,  # Set to 0 for CPU only. Set to -1 if you have a GPU set up.
+        verbose=False    # Suppress internal logs
+    )
+    print("Model loaded successfully.\n")
+except Exception as e:
+    print(f"Error loading model: {e}")
+    sys.exit(1)
+
+with open("prompt.txt", "r", encoding="utf-8") as f:
+    SCHEMA_CONTEXT = f.read()
 
 st.set_page_config(page_title="AI SQL Query Builder", layout="wide")
 st.title("🤖 AI Database Assistant")
-
-genai.configure(api_key=api_key)
-model = genai.GenerativeModel("models/gemini-2.5-flash")
 
 # --- Session State Init ---
 if "df_preview" not in st.session_state:
@@ -48,24 +62,24 @@ if st.session_state.df_preview is not None:
     if st.button("Generate & Run Query", type="primary"): # Need to seperate theese two actions
         try:
             with st.spinner("Generating SQL..."):
-                prompt = f"""
-                You are an expert PostgreSQL assistant. 
-                I have a database table named '{table_name}'. 
-                Here are the first 5 rows of the table to help you understand the column names and data types:
+                prompt = f"""### Task
+                            Generate a SQL query to answer [QUESTION]{user_query}[/QUESTION]
 
-                {st.session_state.df_preview.to_string(index=False)}
+                            ### Database Schema
+                            The query will run on a database with the following schema:
+                            {SCHEMA_CONTEXT}
 
-                Based on this schema, write a valid PostgreSQL query to answer the following question:
-                "{user_query}"
-
-                Rules:
-                1. Output ONLY the raw SQL query. 
-                2. Do not use markdown formatting (no ```sql or blockquotes).
-                3. Do not add explanations or conversational text.
-                4. Always enclose table and column names in double quotes.
-                """
-                response = model.generate_content(prompt)
-                generated_sql = response.text.strip().replace("```sql", "").replace("```", "")
+                            ### SQL
+                            Given the database schema, here is the SQL query that answers [QUESTION]{user_query}[/QUESTION]
+                            [SQL]
+                            """
+                output = llm(
+                    prompt, 
+                    max_tokens=200, 
+                    stop=["```", ";"], # Stop generation when query ends
+                    echo=False
+                )
+                generated_sql = output["choices"][0]["text"].strip().replace("```sql", "").replace("```", "")
 
                 st.subheader("Generated SQL")
                 st.code(generated_sql, language="sql")
