@@ -11,21 +11,22 @@ from pygwalker.api.streamlit import StreamlitRenderer # type: ignore
 # --- Setup ---
 load_dotenv()
 
-MODEL_PATH = "sqlcoder-7b.Q4_K_M.gguf"
+MODEL_PATH = "google_gemma-3-1b-it-Q6_K.gguf" 
 
 try:
-    llm = Llama(
-        model_path=MODEL_PATH,
-        n_ctx=2048,      # Context window size
-        n_gpu_layers=0,  # Set to 0 for CPU only. Set to -1 if you have a GPU set up.
-        verbose=False    # Suppress internal logs
-    )
-    print("Model loaded successfully.\n")
+    with st.spinner("Loading Gemma 3 model into memory..."):
+        llm = Llama(
+            model_path=MODEL_PATH,
+            n_ctx=4096,      # Context window size 
+            n_gpu_layers=-1, # Set to -1 to offload to GPU if available, or 0 for CPU only.
+            verbose=False    # Suppress internal logs
+        )
+        print("Model loaded successfully.\n")
 except Exception as e:
     print(f"Error loading model: {e}")
     sys.exit(1)
 
-# All the table's schemas are passed as context to the LLM. Try to get the schema from the database itself.
+# Get schema context
 with open("prompt.txt", "r", encoding="utf-8") as f:
     SCHEMA_CONTEXT = f.read()
 
@@ -57,32 +58,36 @@ if st.session_state.df_preview is not None:
 
     user_query = st.text_area(
         "What would you like to know?",
-        value="What are the unique batch numbers?"
+        value="What are the unique ages available?"
     )
 
-    # --- Button 2: Generate & Run ---
-    if st.button("Generate & Run Query", type="primary"): # Need to seperate these two actions
+# --- Button 2: Generate & Run ---
+    if st.button("Generate & Run Query", type="primary"):
         try:
             with st.spinner("Generating SQL..."):
-                # Add table name and description to the prompt for better context
-                prompt = f"""### Task
-                            Generate a SQL query to answer [QUESTION]{user_query}[/QUESTION]
-
-                            ### Database Schema
-                            The query will run on a database with the following schema:
-                            {SCHEMA_CONTEXT}
-
-                            ### SQL
-                            Given the database schema, here is the SQL query that answers [QUESTION]{user_query}[/QUESTION]
-                            [SQL]
-                            """
-                output = llm(
-                    prompt, 
-                    max_tokens=200, 
-                    stop=["```", ";"], # Stop generation when query ends
-                    echo=False
+                # Use the Chat Completion API for Gemma models
+                messages = [
+                    {
+                        "role": "system", 
+                        "content": "You are an expert SQL assistant. Generate a valid SQL query to answer the user's question based on the provided schema. Output ONLY the SQL query. Do not include explanations or conversational text."
+                    },
+                    {
+                        "role": "user", 
+                        "content": f"### Database Schema\n{SCHEMA_CONTEXT}\n\n### Question\n{user_query}"
+                    }
+                ]
+                
+                output = llm.create_chat_completion(
+                    messages=messages,
+                    max_tokens=250,
+                    stop=[";"] # Removed "```" so it doesn't cut off immediately
                 )
-                generated_sql = output["choices"][0]["text"].strip().replace("```sql", "").replace("```", "")
+                print("Raw model output:", output)  # Debugging line to see the full response structure
+                # Extract the message content instead of raw text
+                generated_text = output["choices"][0]["message"]["content"].strip()
+                
+                # Clean up any potential markdown formatting from Gemma
+                generated_sql = generated_text.replace("```sql", "").replace("```", "").strip()
 
                 st.subheader("Generated SQL")
                 st.code(generated_sql, language="sql")
@@ -91,14 +96,10 @@ if st.session_state.df_preview is not None:
                 result_df = pd.read_sql(generated_sql, engine)
 
             with st.expander("View Query Results", expanded=True):
-                # 1. Show the raw data first
                 st.dataframe(result_df)
                 
-                # 2. Add the visualization explorer
                 st.subheader("Explore Data")
                 
-                # This creates the drag-and-drop interface
-                # Note: It caches the renderer to prevent reloading on every interaction
                 @st.cache_resource
                 def get_pyg_renderer(df):
                     return StreamlitRenderer(df, spec_io_mode="RW")
