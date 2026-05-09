@@ -6,6 +6,7 @@ from sqlalchemy import inspect
 from llama_cpp import Llama # type: ignore
 import sys
 import plotly.express as px # type: ignore
+from pygwalker.api.streamlit import StreamlitRenderer # type: ignore
 
 # --- Setup ---
 load_dotenv()
@@ -24,6 +25,7 @@ except Exception as e:
     print(f"Error loading model: {e}")
     sys.exit(1)
 
+# All the table's schemas are passed as context to the LLM. Try to get the schema from the database itself.
 with open("prompt.txt", "r", encoding="utf-8") as f:
     SCHEMA_CONTEXT = f.read()
 
@@ -35,7 +37,7 @@ if "df_preview" not in st.session_state:
     st.session_state.df_preview = None
 
 # --- Inputs ---
-table_name = st.text_input("Table Name", value="people")
+table_name = st.text_input("Table Name", value="emp")
 
 # --- Button 1: Fetch Context ---
 if st.button("Fetch Table Context"):
@@ -59,9 +61,10 @@ if st.session_state.df_preview is not None:
     )
 
     # --- Button 2: Generate & Run ---
-    if st.button("Generate & Run Query", type="primary"): # Need to seperate theese two actions
+    if st.button("Generate & Run Query", type="primary"): # Need to seperate these two actions
         try:
             with st.spinner("Generating SQL..."):
+                # Add table name and description to the prompt for better context
                 prompt = f"""### Task
                             Generate a SQL query to answer [QUESTION]{user_query}[/QUESTION]
 
@@ -88,7 +91,20 @@ if st.session_state.df_preview is not None:
                 result_df = pd.read_sql(generated_sql, engine)
 
             with st.expander("View Query Results", expanded=True):
+                # 1. Show the raw data first
                 st.dataframe(result_df)
+                
+                # 2. Add the visualization explorer
+                st.subheader("Explore Data")
+                
+                # This creates the drag-and-drop interface
+                # Note: It caches the renderer to prevent reloading on every interaction
+                @st.cache_resource
+                def get_pyg_renderer(df):
+                    return StreamlitRenderer(df, spec_io_mode="RW")
+                    
+                renderer = get_pyg_renderer(result_df)
+                renderer.explorer()
 
         except Exception as e:
             st.error(f"Error: {e}")
