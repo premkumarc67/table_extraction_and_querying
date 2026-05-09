@@ -1,0 +1,2 @@
+CREATE TABLE emp (id SERIAL PRIMARY KEY, first_name TEXT, last_name TEXT, age INTEGER, salary INTEGER, date TEXT);
+
