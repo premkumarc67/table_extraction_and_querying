@@ -9,6 +9,7 @@ import os
 from sqlalchemy import inspect
 from sqlalchemy import text
 import numpy as np
+import chromadb #type: ignore
 
 load_dotenv() # Load environment variables from .env file
 
@@ -26,9 +27,74 @@ def map_pandas_dtype_to_sql(dtype):
     else:
         return 'TEXT' # Default fallback for strings/objects
 
+# RAG Setup for Schema Metadata Storage
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CHROMA_PATH = os.path.join(BASE_DIR, "chroma_db")
+client = chromadb.PersistentClient(path=CHROMA_PATH) # Stores data in the disk
+print("Chroma path:", CHROMA_PATH)
+
+collection = client.get_or_create_collection(
+    name="table_schema_metadata"
+)
+def generate_and_store_schema_metadata(table_name, df, model): # Used only for new tables.
+
+    columns_info = ["id: SERIAL PRIMARY KEY (auto-incrementing unique identifier)"]
+
+    for col_name, dtype in df.dtypes.items():
+        columns_info.append(
+            f"{col_name}: {map_pandas_dtype_to_sql(dtype)}"
+        )
+
+    columns_info = "\n".join(columns_info)
+
+    sample_df = df.head(5)
+
+    prompt = f"""
+    You are a database documentation assistant.
+
+    Generate semantic metadata for this table.
+
+    Table Name:
+    {table_name}
+
+    Columns:
+    {columns_info}
+
+    Sample Data:
+    {sample_df.to_dict(orient='records')}
+
+    Output Format:
+
+    Table Name:
+    ...
+
+    Table Description:
+    ...
+
+    Columns:
+    - column_name:
+      type:
+      description:
+      sample_values:
+    """
+
+    response = model.generate_content(prompt)
+
+    schema_metadata = response.text
+    # For now using default embedding model
+    collection.add(
+        documents=[schema_metadata],
+        metadatas=[{
+            "table_name": table_name
+        }],
+        ids=[table_name]
+    )
+
+    return schema_metadata
+
 api_key =  os.getenv("google_api_key")
 genai.configure(api_key=api_key)
-model = genai.GenerativeModel('models/gemini-2.5-flash')
+model = genai.GenerativeModel('models/gemini-2.5-flash') # Initialize the Gemini 2.5 Flash model
 
 # --- UI LAYOUT ---
 st.title("📝 Handwritten Table to CSV Converter")
@@ -44,7 +110,7 @@ if uploaded_file is None:
 
 # 1. Display the image
 image = Image.open(uploaded_file)
-st.image(image, use_column_width=True, caption="Uploaded Image") 
+st.image(image, width="stretch", caption="Uploaded Image") 
 
 # 2. Process Button
 submit = st.button("Extract the Data")
@@ -59,8 +125,8 @@ if submit:
     """
     
     # API CALL
-    response = model.generate_content([prompt, image])
-    csv_data = response.text.strip()
+    response = model.generate_content([prompt, image])   # Returns response in json format
+    csv_data = response.text.strip() # String containing CSV-formatted data
 
     # Clean up markdown if present
     if csv_data.startswith("```"):
@@ -77,7 +143,7 @@ if 'csv_data' in st.session_state:
     
     st.success("Data Extraction Complete!")
     st.subheader("Preview Data")
-
+    # read_csv expects a file-like object, so we use StringIO to convert the string to a file-like object
     df = pd.read_csv(io.StringIO(csv_data)) # Dataframe is created here
     df.columns = (df.columns.str.strip().str.lower().str.replace(" ", "_")) # Preprocessing Col names
     st.dataframe(df, use_container_width=True)
@@ -127,7 +193,7 @@ if st.session_state.get("show_table_input") and submit_upload:
                 sql_type = map_pandas_dtype_to_sql(dtype)
                 column_definitions.append(f'{col_name} {sql_type}')
 
-            # 3. Construct the CREATE TABLE query - Need to modify this part, remove using "" and space in col names - change the cols names in dataframe itself
+            # 3. Construct the CREATE TABLE query
             columns_string = ", ".join(column_definitions)
             create_table_query = f"CREATE TABLE {table_name} ({columns_string})"
             
@@ -140,7 +206,7 @@ if st.session_state.get("show_table_input") and submit_upload:
                 conn.execute(text(create_table_query))
                 conn.commit() # Ensure table creation is committed
                 
-                # 4. Append the data
+                # 4. Append the data. DataFrame offers direct upload to Database
                 df.to_sql(
                     table_name,
                     conn,
@@ -150,6 +216,9 @@ if st.session_state.get("show_table_input") and submit_upload:
                 
             st.success(f"Table '{table_name}' created manually and data uploaded.")
 
+            # 5. Generate and store schema metadata in ChromaDB for RAG retrieval 
+            generate_and_store_schema_metadata(table_name,df,model) 
+
         else:
             # Get existing table columns
             table_columns = [
@@ -157,13 +226,15 @@ if st.session_state.get("show_table_input") and submit_upload:
                 for col in inspector.get_columns(table_name)
             ]
 
-            # Drop extra columns from DataFrame
+            # Drop extra columns from DataFrame. 
             extra_cols = set(df.columns) - set(table_columns)
             if extra_cols:
                 st.warning(f"Dropping extra columns: {extra_cols}")
                 df = df.drop(columns=extra_cols)
 
-            # Append data
+            # Append data. 
+            # Pandas generates an INSERT query only for the columns present in the DataFrame. 
+            # This allows us to append data even if the Dtaframe has fewer columns than the Table.
             df.to_sql(
                 table_name,
                 engine,
